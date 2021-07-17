@@ -1,0 +1,1 @@
+{"Modules":[{"Key":"eks","Source":"./modules/eks","Dir":"modules/eks"},{"Key":"eks.fargate","Source":"./modules/fargate","Dir":"modules/eks/modules/fargate"},{"Key":"eks.node_groups","Source":"./modules/node_groups","Dir":"modules/eks/modules/node_groups"},{"Key":"vpc","Source":"./modules/vpc","Dir":"modules/vpc"},{"Key":"","Source":"","Dir":"."}]}

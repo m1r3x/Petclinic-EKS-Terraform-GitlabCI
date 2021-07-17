@@ -1,0 +1,143 @@
+variables:
+  TF_ROOT: Files/Terraform
+  MAVEN_OPTS: -Dmaven.repo.local=./.m2/repository
+  
+
+stages:
+- build_project
+- build_push_image
+- plan
+- apply
+- deploy
+- healthcheck
+- destroy
+
+
+build_project:
+  image: maven:latest
+  stage: build_project
+  script:
+    - mvn package -DskipTests=true -Dcheckstyle.skip
+    - mv target/*.jar Files/petclinic.jar
+  artifacts:
+    paths:
+      - ${CI_PROJECT_DIR}/Files/petclinic.jar
+  cache:
+    paths:
+      - ./.m2/repository
+  only:
+    refs:
+      - master
+
+
+build_push_image:
+  image: docker:git
+  stage: build_push_image
+  services:
+  - docker:dind
+  script:
+    - cd Files
+    - docker login -u ${docker_user} -p ${docker_passwd}
+    - docker build -t m1r3x/demo4:petclinic .
+    - docker push m1r3x/demo4:petclinic
+  only:
+    - master
+  needs:
+    - build_project
+
+
+plan:
+  image: registry.gitlab.com/gitlab-org/terraform-images/stable:latest
+  stage: plan
+  script:
+    - cd ${TF_ROOT}
+    - gitlab-terraform init
+    - gitlab-terraform plan
+  artifacts:
+    paths:
+      - ${TF_ROOT}/plan.cache
+  needs:
+    - build_push_image
+  only:
+    refs:
+      - master
+
+
+apply:
+  image: registry.gitlab.com/gitlab-org/terraform-images/stable:latest
+  stage: apply
+  script:
+    - cd ${TF_ROOT}
+    - gitlab-terraform apply
+  dependencies:
+    - plan
+  artifacts:
+    paths:
+      - ${TF_ROOT}/*.tfstate
+  needs:
+    - plan
+  only:
+    refs:
+      - master
+
+deploy:
+  image: registry.gitlab.com/gitlab-org/cloud-deploy/aws-base:latest
+  stage: deploy
+  script:
+    - curl -o kubectl https://amazon-eks.s3.us-west-2.amazonaws.com/1.20.4/2021-04-12/bin/linux/amd64/kubectl
+    - chmod +x kubectl
+    - mv kubectl /usr/bin/kubectl
+    - aws eks --region us-east-2 update-kubeconfig --name ${cluster_name}
+    - cd Files/Deployment
+    - kubectl create secret generic secrets --from-literal=user=${DBuser} --from-literal=password=${DBpassword} --from-literal=database=${DB}
+    - kubectl apply -f ./
+    - kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+    - kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.0.5/aio/deploy/recommended.yaml
+    - cd Dashboard
+    - kubectl apply -f eks-admin-service-account.yaml
+    - cd ${CI_PROJECT_DIR}
+    - sleep 60
+    - kubectl get svc petclinic -o yaml | grep hostname | awk '{print $3}' > app_ip.txt
+  artifacts:
+    paths:
+      - app_ip.txt
+  dependencies:
+     - apply
+  needs:
+     - apply
+  only:
+    refs:
+      - master
+
+
+healthcheck:
+  stage: healthcheck
+  script:
+    - app_ip=$(cat app_ip.txt)
+    - curl http://$app_ip:8080/actuator/health/liveness -o response.txt
+    - response=$(cat response.txt)
+    - if [ $response == '{"status":"UP"}' ]; then exit 0; else exit 1; fi
+  dependencies:
+    - deploy
+  needs:
+    - deploy
+  only:
+    refs:
+      - master
+
+
+destroy:
+  image: registry.gitlab.com/gitlab-org/terraform-images/stable:latest
+  stage: destroy
+  script:
+    - cd ${TF_ROOT}
+    - gitlab-terraform destroy
+  when: manual
+  allow_failure: true
+  dependencies:
+    - apply
+  needs:
+    - apply
+  only:
+    refs:
+      - master
